@@ -1,0 +1,13 @@
+/vendor
+/node_modules
+/public/storage
+/storage/*.key
+/storage/app/tmp
+.env
+.env.backup
+.phpunit.result.cache
+.phpunit.cache
+.idea
+.vscode
+.DS_Store
+/test-media/test-clip.mp4
