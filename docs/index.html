@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClipForge — video processing service on Laravel</title>
+<meta name="description" content="Laravel 12 video hosting backend: Redis queues, FFmpeg hover previews, ImageMagick thumbnails, Redis caching, Docker.">
+<style>
+  :root { --bg:#0f1115; --card:#181b22; --line:#232836; --muted:#8b93a7; --text:#e8ebf2; --accent:#ff7a1a; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); }
+  a { color:var(--accent); }
+  .wrap { max-width:1100px; margin:0 auto; padding:0 24px; }
+  header { padding:64px 0 32px; }
+  .logo { font-weight:800; font-size:44px; letter-spacing:.5px; margin:0; }
+  .logo span { color:var(--accent); }
+  .lead { font-size:19px; color:#c6cbd8; max-width:720px; margin:12px 0 24px; }
+  .btns { display:flex; gap:12px; flex-wrap:wrap; }
+  .btn { display:inline-block; padding:10px 18px; border-radius:8px; font-weight:600; text-decoration:none; }
+  .btn.primary { background:var(--accent); color:#111; }
+  .btn.ghost { border:1px solid var(--line); color:var(--text); }
+  .stack { display:flex; flex-wrap:wrap; gap:8px; margin-top:28px; }
+  .stack span { font-size:13px; padding:4px 10px; border-radius:999px; background:var(--card); border:1px solid var(--line); color:#c6cbd8; }
+  section { padding:40px 0; border-top:1px solid var(--line); }
+  h2 { font-size:26px; margin:0 0 8px; }
+  .sub { color:var(--muted); margin:0 0 24px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:20px; }
+  .card { background:var(--card); border-radius:10px; overflow:hidden; }
+  .thumb { position:relative; aspect-ratio:16/9; background:#000; cursor:pointer; }
+  .thumb img, .thumb video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+  .thumb video { opacity:0; transition:opacity .15s; }
+  .thumb.playing video { opacity:1; }
+  .dur { position:absolute; right:6px; bottom:6px; background:rgba(0,0,0,.75); padding:1px 6px; border-radius:4px; font-size:12px; }
+  .meta { padding:10px 12px; font-size:15px; } .meta small { color:var(--muted); display:block; }
+  .hint { font-size:14px; color:var(--muted); margin-top:14px; }
+  .flow { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; counter-reset:step; }
+  .step { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; font-size:14px; }
+  .step b { display:block; color:var(--accent); font-size:13px; margin-bottom:4px; }
+  .step b::before { counter-increment:step; content:counter(step) ". "; }
+  table { width:100%; border-collapse:collapse; font-size:15px; }
+  th, td { text-align:left; padding:10px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:13px; text-transform:uppercase; letter-spacing:.5px; }
+  td:first-child { color:#c6cbd8; width:30%; }
+  code, pre { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; }
+  pre { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; overflow-x:auto; font-size:14px; }
+  td code { background:#222735; padding:1px 5px; border-radius:4px; font-size:13px; }
+  footer { padding:32px 0 48px; color:var(--muted); font-size:14px; border-top:1px solid var(--line); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1 class="logo">Clip<span>Forge</span></h1>
+    <p class="lead">A video-hosting backend on Laravel 12. Uploads go through a Redis queue, FFmpeg cuts tube-style hover previews, ImageMagick makes thumbnails, and the catalog is served from a Redis cache.</p>
+    <div class="btns">
+      <a class="btn primary" href="https://github.com/trump-sudo/clipforge">Source on GitHub</a>
+      <a class="btn ghost" href="#run">Run it locally</a>
+    </div>
+    <div class="stack">
+      <span>PHP 8.3</span><span>Laravel 12</span><span>MySQL 8</span><span>Redis 7</span><span>FFmpeg</span><span>ImageMagick</span><span>jQuery</span><span>Docker</span><span>nginx</span><span>PHPUnit</span><span>GitHub Actions</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>Demo: real pipeline output</h2>
+    <p class="sub">These thumbnails and previews came out of ClipForge's own processing job. Hover a card (or tap it on mobile) to play the preview.</p>
+    <div class="grid" id="demo"></div>
+    <p class="hint">GitHub Pages only serves static files, so this page shows processed results. The full app (uploads, queue, API) runs with one <code>docker compose up</code>.</p>
+  </section>
+
+  <section>
+    <h2>What happens on upload</h2>
+    <p class="sub">The HTTP request only validates and stores the file. Everything heavy happens in a queue worker.</p>
+    <div class="flow">
+      <div class="step"><b>Upload</b>AJAX with a progress bar. Mime and size are validated, and the original goes to private storage</div>
+      <div class="step"><b>Queue</b>A <code>ProcessVideo</code> job lands on the Redis <code>media</code> queue. It is unique per video, with 2 tries</div>
+      <div class="step"><b>ffprobe</b>Reads duration and resolution, and rejects files with no video stream</div>
+      <div class="step"><b>Thumbnail</b>FFmpeg grabs a frame at 30%. ImageMagick center-crops it to a 640×360 WebP</div>
+      <div class="step"><b>Preview</b>Three 2-second segments, concatenated, no audio, with <code>+faststart</code></div>
+      <div class="step"><b>Ready</b>The catalog cache version is bumped, and a Telegram notification is sent (best effort)</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Engineering decisions</h2>
+    <p class="sub">The parts a video platform needs to hold up under load.</p>
+    <table>
+      <tr><th>Problem</th><th>Solution</th></tr>
+      <tr><td>Encoding blocks requests</td><td>Processing runs in a queue worker. <code>retry_after</code> (700 s) is set above the job timeout (600 s), so a long encode is never picked up twice.</td></tr>
+      <tr><td>Hottest read: the catalog</td><td>Pages are cached in Redis and invalidated with a version counter: a single <code>INCR</code> retires every cached page, and no cache tags are needed.</td></tr>
+      <tr><td>View counter = hot-row UPDATE</td><td>Write-behind: each view is a Redis <code>HINCRBY</code>. A scheduled command drains the hash with an atomic <code>RENAME</code> and applies the counts in one transaction every minute.</td></tr>
+      <tr><td>Heavy grid pages</td><td>Small WebP thumbnails. The preview <code>&lt;video&gt;</code> element is created only on first hover.</td></tr>
+      <tr><td>Third-party API is down</td><td>The Telegram notifier uses a timeout and retries, and logs errors without failing the job.</td></tr>
+      <tr><td>Shell injection via filenames</td><td>All binaries run through argument arrays, never string concatenation.</td></tr>
+    </table>
+  </section>
+
+  <section id="run">
+    <h2>Run it locally</h2>
+    <pre>git clone https://github.com/trump-sudo/clipforge.git
+cd clipforge
+docker compose up -d --build
+# open http://localhost:8080
+
+docker compose exec app php artisan test   # 15 tests</pre>
+  </section>
+
+  <footer>
+    ClipForge · built by Yevhen · <a href="https://github.com/trump-sudo/clipforge">github.com/trump-sudo/clipforge</a>
+  </footer>
+</div>
+
+<script>
+  var videos = [
+    { id: 'kittens', title: 'Dancing kittens', dur: '0:11', res: '576x1024 · vertical, short → single-segment preview' },
+    { id: 'squad',   title: 'Kitten squad',    dur: '0:03', res: '576x1024 · vertical → center-cropped thumbnail' },
+    { id: 'night',   title: 'Night shift',     dur: '0:03', res: '576x1024 · vertical → center-cropped thumbnail' },
+    { id: 'wave',    title: 'Encore',          dur: '0:03', res: '576x1024 · vertical → center-cropped thumbnail' }
+  ];
+
+  var grid = document.getElementById('demo');
+  videos.forEach(function (v) {
+    var card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML =
+      '<div class="thumb" data-preview="demo/' + v.id + '/preview.mp4">' +
+        '<img src="demo/' + v.id + '/thumb.webp" alt="" loading="lazy">' +
+        '<span class="dur">' + v.dur + '</span>' +
+      '</div>' +
+      '<div class="meta">' + v.title + '<small>' + v.res + '</small></div>';
+    grid.appendChild(card);
+  });
+
+  function play(thumb) {
+    var video = thumb.querySelector('video');
+    if (!video) {
+      video = document.createElement('video');
+      video.muted = true; video.loop = true; video.playsInline = true;
+      video.src = thumb.dataset.preview;
+      video.addEventListener('playing', function () { thumb.classList.add('playing'); });
+      thumb.appendChild(video);
+    }
+    var p = video.play(); if (p && p.catch) p.catch(function () {});
+  }
+  function stop(thumb) {
+    var video = thumb.querySelector('video');
+    thumb.classList.remove('playing');
+    if (video) { video.pause(); video.currentTime = 0; }
+  }
+
+  document.querySelectorAll('.thumb').forEach(function (t) {
+    t.addEventListener('mouseenter', function () { play(t); });
+    t.addEventListener('mouseleave', function () { stop(t); });
+    t.addEventListener('click', function () { t.classList.contains('playing') ? stop(t) : play(t); });
+  });
+</script>
+</body>
+</html>
